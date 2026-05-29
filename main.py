@@ -1,108 +1,139 @@
-import os
-import traceback
-from fastapi import FastAPI, File, UploadFile
-import numpy as np
-from tensorflow.keras.models import load_model
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
+import numpy as np
+import tensorflow as tf
 import io
+import os
+from tensorflow.keras.applications.efficientnet import preprocess_input
 
-app = FastAPI()
+app = FastAPI(
+    title="LeafScan API",
+    description="AI-powered plant disease detection using EfficientNetB0",
+    version="1.0.0"
+)
 
-# =============================
-# PATH SETUP (IMPORTANT)
-# =============================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# CHANGE THIS depending on your repo file
-MODEL_PATH = os.path.join(BASE_DIR, "model", "plant_disease_model.keras")
-CLASS_PATH = os.path.join(BASE_DIR, "model", "class_names.txt")
+# Global variables
+MODEL = None
+CLASS_NAMES = []
 
-print("BASE_DIR:", BASE_DIR)
-print("MODEL_PATH:", MODEL_PATH)
-print("CLASS_PATH:", CLASS_PATH)
-
-# =============================
-# GLOBALS
-# =============================
-model = None
-classes = []
-
-# =============================
-# LOAD MODEL ON STARTUP
-# =============================
-try:
-    print("Loading model...")
-
-    model = load_model(MODEL_PATH)
-    print("Model loaded successfully ✔")
-
-    with open(CLASS_PATH, "r") as f:
-        classes = [line.strip() for line in f.readlines()]
-
-    print("Classes loaded:", len(classes))
-
-except Exception as e:
-    print("\n❌ MODEL LOAD FAILED ❌")
-    traceback.print_exc()
+# Paths
+MODEL_PATH = os.getenv("MODEL_PATH", "model/plant_disease_model.keras")
+CLASS_NAMES_PATH = os.getenv("CLASS_NAMES_PATH", "model/class_names.txt")
 
 
-# =============================
-# HEALTH CHECK
-# =============================
+# Load model and classes on startup
+@app.on_event("startup")
+async def load_model():
+    global MODEL, CLASS_NAMES
+
+    print("\n========== STARTUP ==========")
+    print("Loading model from:", MODEL_PATH)
+    print("Loading classes from:", CLASS_NAMES_PATH)
+
+    # Load class names
+    if os.path.exists(CLASS_NAMES_PATH):
+        with open(CLASS_NAMES_PATH, "r") as f:
+            CLASS_NAMES = [line.strip() for line in f if line.strip()]
+        print(f"✅ Loaded {len(CLASS_NAMES)} class names")
+    else:
+        print("❌ class_names.txt not found")
+
+    # Load model
+    if os.path.exists(MODEL_PATH):
+        print(f"📦 Loading model...")
+        MODEL = tf.keras.models.load_model(MODEL_PATH)
+        print("✅ Model loaded successfully")
+    else:
+        print("⚠️ Model not found")
+
+    # 🔥 DEBUG OUTPUT (IMPORTANT)
+    print("\n========== DEBUG CLASS INFO ==========")
+    print("TOTAL CLASSES:", len(CLASS_NAMES))
+    print("FIRST 10 CLASSES:", CLASS_NAMES[:10])
+    print("LAST 10 CLASSES:", CLASS_NAMES[-10:])
+    print("======================================\n")
+
+
+# Image preprocessing
+def preprocess_image(image_bytes: bytes) -> np.ndarray:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img = img.resize((224, 224))
+
+    img_array = np.array(img, dtype=np.float32)
+    img_array = preprocess_input(img_array)
+    img_array = np.expand_dims(img_array, axis=0)
+
+    return img_array
+
+
+# Root
+@app.get("/")
+def root():
+    return {
+        "message": "LeafScan API is running 🌿",
+        "model_loaded": MODEL is not None,
+        "classes_loaded": len(CLASS_NAMES),
+    }
+
+
+# Health
 @app.get("/health")
 def health():
     return {
         "status": "healthy",
-        "model_loaded": model is not None,
-        "classes_count": len(classes)
+        "model_loaded": MODEL is not None,
+        "classes_count": len(CLASS_NAMES),
     }
 
 
-# =============================
-# GET CLASSES
-# =============================
+# Classes
 @app.get("/classes")
 def get_classes():
     return {
-        "total": len(classes),
-        "classes": classes
+        "total": len(CLASS_NAMES),
+        "classes": CLASS_NAMES
     }
 
 
-# =============================
-# PREDICT ENDPOINT
-# =============================
+# Predict
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
 
-    if model is None:
-        return {"error": "Model not loaded on server"}
+    if MODEL is None:
+        return {"error": "Model not loaded"}
 
-    try:
-        # Read image
-        image_bytes = await file.read()
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    # Read image
+    contents = await file.read()
 
-        # Resize (IMPORTANT: must match training size)
-        image = image.resize((224, 224))
+    # Preprocess
+    img_array = preprocess_image(contents)
 
-        # Convert to array
-        img_array = np.array(image) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
+    # Predict
+    predictions = MODEL.predict(img_array, verbose=0)
+    predicted_index = int(np.argmax(predictions[0]))
+    confidence = float(np.max(predictions[0]))
 
-        # Predict
-        prediction = model.predict(img_array)
+    class_name = CLASS_NAMES[predicted_index]
 
-        class_index = int(np.argmax(prediction))
-        confidence = float(np.max(prediction))
+    # 🔥 DEBUG PREDICTION
+    print("\n========== PREDICTION DEBUG ==========")
+    print("Predicted index:", predicted_index)
+    print("Predicted class:", class_name)
+    print("Top 5 indices:", np.argsort(predictions[0])[-5:])
+    print("Top 5 values:", sorted(predictions[0])[-5:])
+    print("======================================\n")
 
-        return {
-            "class": classes[class_index] if class_index < len(classes) else "unknown",
-            "confidence": confidence
-        }
-
-    except Exception as e:
-        return {
-            "error": str(e),
-            "trace": traceback.format_exc()
-        }
+    return {
+        "class": class_name,
+        "confidence": confidence
+    }
