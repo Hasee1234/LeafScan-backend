@@ -18,7 +18,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://leaf-scan-5mbv3w2f9-hasee1234s-projects.vercel.app"
+        "https://leaf-scan-frej.vercel.app/detect"
     ],
     allow_credentials=True,
     allow_methods=["*"],
