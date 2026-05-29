@@ -1,0 +1,16 @@
+# ── Web Framework ──
+fastapi==0.115.0
+uvicorn==0.30.0
+python-multipart==0.0.9
+
+# ── AI / ML ──
+tensorflow==2.19.0
+tensorflow-datasets==4.9.6
+
+# ── Image & Data ──
+numpy==1.26.4
+Pillow==10.4.0
+
+# ── Utilities ──
+python-dotenv==1.0.1
+matplotlib==3.9.0
